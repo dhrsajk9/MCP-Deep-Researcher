@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pycache/
+*.env
+*.venv
+env/
+venv/
+.venv/
+*.egg-info/
+*.egg
+*.whl
+
+# Conda / virtual environments
+.conda/
+*.conda
+
+# Logs
+*.log
+*.out
+*.err
+
+# Data / generated content
+data/
+vectors/
+*.db
+*.sqlite
+
+# Model cache (HuggingFace, Sentence Transformers, etc.)
+.cache/
+.cache_huggingface/
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+
+# Mac/Windows
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.env
+.env
+.env

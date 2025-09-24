@@ -1,0 +1,44 @@
+# MCP Server Configuration
+server:
+  host: "localhost"
+  port: 8000
+  name: "research-paper-server"
+  version: "1.0.0"
+
+# Research APIs
+apis:
+  arxiv:
+    base_url: "http://export.arxiv.org/api/query"
+    max_results: 10
+    rate_limit: 3  # seconds between requests
+  
+  semantic_scholar:
+    base_url: "https://api.semanticscholar.org/graph/v1/paper"
+    api_key: null  # Optional API key for higher limits
+  
+  pubmed:
+    base_url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+    email: null  # Required for NCBI API
+
+# Vector Database
+vector_db:
+  provider: "chromadb"  # or "pinecone", "weaviate"
+  settings:
+    persist_directory: "./data/vectors"
+    collection_name: "research_papers"
+    embedding_model: "all-MiniLM-L6-v2"
+    chunk_size: 512
+    chunk_overlap: 50
+
+# Storage
+storage:
+  papers_directory: "./data/papers"
+  supported_formats: ["pdf", "txt", "json"]
+  max_file_size: "50MB"
+
+# RAG Configuration
+rag:
+  max_context_length: 4000
+  similarity_threshold: 0.7
+  max_retrieved_chunks: 5
+  rerank: true
