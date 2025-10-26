@@ -33,52 +33,67 @@ class VectorStore:
         logging.info(f"Initialized vector store with {self.collection.count()} documents")
     
     def _chunk_text(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
-        """Split text into overlapping chunks"""
-        chunk_size = chunk_size or self.settings['chunk_size']
-        overlap = overlap or self.settings['chunk_overlap']
+        """Split text into overlapping chunks with better sentence boundaries"""
+        chunk_size = chunk_size or self.settings.get('chunk_size', 1000)
+        overlap = overlap or self.settings.get('chunk_overlap', 150)
         
         if len(text) <= chunk_size:
             return [text]
         
+        # Better sentence splitting
+        import re
+        sentences = re.split(r'[.!?]+', text)
+        
         chunks = []
-        start = 0
+        current_chunk = ""
         
-        while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-            
-            # Try to end at a sentence boundary
-            if end < len(text):
-                last_period = chunk.rfind('.')
-                last_exclamation = chunk.rfind('!')
-                last_question = chunk.rfind('?')
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
                 
-                sentence_end = max(last_period, last_exclamation, last_question)
-                if sentence_end > chunk_size * 0.5:  # Only if we're not cutting too much
-                    chunk = chunk[:sentence_end + 1]
-                    end = start + len(chunk)
-            
-            chunks.append(chunk.strip())
-            start = end - overlap
+            # If adding this sentence would exceed chunk size
+            if len(current_chunk) + len(sentence) > chunk_size:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    # Start new chunk with overlap
+                    words = current_chunk.split()
+                    overlap_words = words[-overlap//10:] if len(words) > overlap//10 else words
+                    current_chunk = ' '.join(overlap_words) + ' ' + sentence
+                else:
+                    # Single sentence is too long, split by words
+                    words = sentence.split()
+                    for i in range(0, len(words), chunk_size//10):
+                        chunk_words = words[i:i + chunk_size//10]
+                        chunks.append(' '.join(chunk_words))
+            else:
+                current_chunk += ' ' + sentence if current_chunk else sentence
         
-        return chunks
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return [chunk.strip() for chunk in chunks if chunk.strip()]
     
     async def add_paper(self, paper: 'ResearchPaper', full_text: Optional[str] = None):
-        """Add a research paper to the vector store"""
+        """Add a research paper to the vector store with enhanced processing"""
         
         # Prepare text content for embedding
         text_content = []
         
-        # Add title and abstract
-        title_abstract = f"Title: {paper.title}\n\nAbstract: {paper.abstract}"
+        # Enhanced title and abstract formatting for better matching
+        title_abstract = f"Research Paper: {paper.title}\n\nAuthors: {', '.join(paper.authors[:3])}\n\nAbstract: {paper.abstract}\n\nCategories: {', '.join(paper.categories) if paper.categories else 'N/A'}"
         text_content.append(title_abstract)
         
         # Add full text if available
-        if full_text:
+        if full_text and len(full_text.strip()) > 100:
             chunks = self._chunk_text(full_text)
-            text_content.extend(chunks)
+            # Enhance chunks with context
+            for i, chunk in enumerate(chunks):
+                enhanced_chunk = f"Paper: {paper.title}\n\nContent Section {i+1}:\n{chunk}"
+                text_content.append(enhanced_chunk)
         
         # Generate embeddings
+        print(f"Generating embeddings for {len(text_content)} chunks...")
         embeddings = self.embedding_model.encode(text_content).tolist()
         
         # Prepare metadata
@@ -93,7 +108,8 @@ class VectorStore:
                 'url': paper.url,
                 'chunk_index': i,
                 'chunk_type': 'title_abstract' if i == 0 else 'content',
-                'categories': json.dumps(paper.categories) if paper.categories else json.dumps([])
+                'categories': json.dumps(paper.categories) if paper.categories else json.dumps([]),
+                'relevance_score': paper.metadata.get('relevance_score', 0) if paper.metadata else 0
             }
             metadata.append(chunk_metadata)
         
@@ -116,36 +132,76 @@ class VectorStore:
         max_results: int = 5,
         similarity_threshold: float = None
     ) -> List[Dict]:
-        """Search for relevant paper chunks"""
+        """Enhanced search with much lower thresholds and multiple query variations"""
         
-        similarity_threshold = similarity_threshold or self.config.get('similarity_threshold', 0.7)
+        # Use much lower default threshold for more results
+        similarity_threshold = similarity_threshold or 0.05  # Very low threshold
         
-        # Generate query embedding
-        query_embedding = self.embedding_model.encode([query]).tolist()
+        print(f"Enhanced vector search - Query: '{query}', Threshold: {similarity_threshold}")
         
-        # Search in collection
-        results = self.collection.query(
-            query_embeddings=query_embedding,
-            n_results=max_results,
-            include=['documents', 'metadatas', 'distances']
-        )
-        
-        # Process results
-        search_results = []
-        for i in range(len(results['documents'][0])):
-            distance = results['distances'][0][i]
-            similarity = 1 - distance  # Convert distance to similarity
+        try:
+            # Generate multiple query variations for better matching
+            query_variations = [
+                query,
+                f"What are {query}?",
+                f"Applications of {query}",
+                f"{query} research",
+                f"Introduction to {query}",
+                f"{query} machine learning",
+                f"{query} artificial intelligence"
+            ]
             
-            if similarity >= similarity_threshold:
-                result = {
-                    'document': results['documents'][0][i],
-                    'metadata': results['metadatas'][0][i],
-                    'similarity': similarity,
-                    'distance': distance
-                }
-                search_results.append(result)
-        
-        return search_results
+            all_results = []
+            
+            for q_var in query_variations:
+                query_embedding = self.embedding_model.encode([q_var]).tolist()
+                
+                results = self.collection.query(
+                    query_embeddings=query_embedding,
+                    n_results=max_results * 4,  # Get many more results
+                    include=['documents', 'metadatas', 'distances']
+                )
+                
+                if results['documents'] and results['documents'][0]:
+                    for i in range(len(results['documents'][0])):
+                        distance = results['distances'][0][i]
+                        similarity = max(0, 1 - distance)
+                        
+                        # Very lenient threshold
+                        if similarity >= similarity_threshold:
+                            result = {
+                                'document': results['documents'][0][i],
+                                'metadata': results['metadatas'][0][i],
+                                'similarity': similarity,
+                                'distance': distance,
+                                'query_variant': q_var
+                            }
+                            all_results.append(result)
+            
+            # Remove duplicates based on document content
+            seen_docs = set()
+            unique_results = []
+            for result in all_results:
+                doc_key = result['document'][:100]  # Use first 100 chars as key
+                if doc_key not in seen_docs:
+                    seen_docs.add(doc_key)
+                    unique_results.append(result)
+            
+            # Sort by similarity and take top results
+            unique_results.sort(key=lambda x: x['similarity'], reverse=True)
+            final_results = unique_results[:max_results]
+            
+            print(f"Found {len(final_results)} unique results above threshold {similarity_threshold}")
+            for i, result in enumerate(final_results):
+                title = result['metadata'].get('title', 'Unknown')[:40]
+                print(f"  {i+1}. Sim: {result['similarity']:.3f} - {title}...")
+            
+            return final_results
+            
+        except Exception as e:
+            logging.error(f"Error in enhanced vector search: {e}")
+            print(f"Vector search error: {e}")
+            return []
     
     def get_collection_stats(self) -> Dict:
         """Get statistics about the collection"""

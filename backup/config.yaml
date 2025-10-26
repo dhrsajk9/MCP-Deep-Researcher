@@ -1,0 +1,46 @@
+# config/config.yaml - Updated configuration with better RAG settings
+
+# MCP Server Configuration
+server:
+  host: "localhost"
+  port: 8000
+  name: "research-paper-server"
+  version: "1.0.0"
+
+# Research APIs
+apis:
+  arxiv:
+    base_url: "http://export.arxiv.org/api/query"
+    max_results: 10
+    rate_limit: 1  # Reduced rate limit for faster testing
+  
+  semantic_scholar:
+    base_url: "https://api.semanticscholar.org/graph/v1/paper"
+    api_key: null  # Optional API key for higher limits
+  
+  pubmed:
+    base_url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+    email: null  # Required for NCBI API
+
+# Vector Database - Improved settings for better RAG performance
+vector_db:
+  provider: "chromadb"
+  settings:
+    persist_directory: "./data/vectors"
+    collection_name: "research_papers"
+    embedding_model: "all-MiniLM-L6-v2"  # Good balance of speed and quality
+    chunk_size: 800  # Larger chunks for better context
+    chunk_overlap: 100  # More overlap for continuity
+
+# Storage
+storage:
+  papers_directory: "./data/papers"
+  supported_formats: ["pdf", "txt", "json"]
+  max_file_size: "50MB"
+
+# RAG Configuration - Optimized for better results
+rag:
+  max_context_length: 6000  # Increased context length
+  similarity_threshold: 0.2  # Lower threshold to find more results
+  max_retrieved_chunks: 8    # More chunks for better coverage
+  rerank: true

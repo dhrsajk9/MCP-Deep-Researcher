@@ -2,8 +2,8 @@
   "mcpServers": {
     "research-papers": {
       "command": "python",
-      "args": ["src/server.py"],
-      "cwd": "/path/to/your/research-mcp-server"
+      "args": ["src/mcp_server.py"],
+      "cwd": "/path/to/research-mcp-server"
     }
   }
 }

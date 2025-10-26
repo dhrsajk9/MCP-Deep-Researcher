@@ -54,11 +54,24 @@ async def _search_papers(query, sources, max_results, config_path):
         click.echo(f"   Source: {paper.source}")
         click.echo(f"   URL: {paper.url}")
         
+        # Show relevance and strategy if available
+        if paper.metadata:
+            relevance = paper.metadata.get('relevance_score', 0)
+            strategy = paper.metadata.get('strategy', 'Unknown')
+            click.echo(f"   Relevance: {relevance:.1f} (via {strategy})")
+        
         # Download PDF and extract text if available
         full_text = None
         if paper.pdf_url:
             click.echo("   📥 Downloading PDF...")
-            full_text = await pdf_processor.download_and_extract_pdf(paper)
+            try:
+                full_text = await pdf_processor.download_and_extract_pdf(paper)
+                if full_text:
+                    click.echo(f"   ✅ PDF processed ({len(full_text)} chars)")
+                else:
+                    click.echo("   ⚠️ PDF processing failed, using abstract only")
+            except Exception as e:
+                click.echo(f"   ⚠️ PDF error: {e}")
         
         # Add to vector store
         await vector_store.add_paper(paper, full_text)
@@ -81,7 +94,10 @@ async def _ask_papers(question, config_path):
     if result.sources:
         click.echo(f"\n📚 Sources ({len(result.sources)}):")
         for i, source in enumerate(result.sources[:3], 1):
-            click.echo(f"   {i}. {source['title']} (similarity: {source['similarity']:.2f})")
+            authors = source['authors'][:2] if source['authors'] else ['Unknown']
+            authors_str = ', '.join(authors)
+            click.echo(f"   {i}. {source['title']} - {authors_str}")
+            click.echo(f"      Similarity: {source['similarity']:.3f}")
 
 async def _show_stats(config_path):
     """Show statistics implementation"""
@@ -95,6 +111,12 @@ async def _show_stats(config_path):
     click.echo(f"   Total documents: {stats['total_documents']}")
     click.echo(f"   Collection name: {stats['collection_name']}")
     click.echo(f"   Embedding model: {stats['embedding_model']}")
+    
+    # Show stored papers
+    papers_dir = Path(config['storage']['papers_directory'])
+    if papers_dir.exists():
+        paper_files = list(papers_dir.glob("*.json"))
+        click.echo(f"   Stored papers: {len(paper_files)}")
 
 if __name__ == '__main__':
     cli()

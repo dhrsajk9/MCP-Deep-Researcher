@@ -1,3 +1,5 @@
+# Enhanced configuration for foundational papers and better RAG
+
 # MCP Server Configuration
 server:
   host: "localhost"
@@ -5,40 +7,38 @@ server:
   name: "research-paper-server"
   version: "1.0.0"
 
-# Research APIs
+# Research APIs - Enhanced for foundational papers
 apis:
   arxiv:
     base_url: "http://export.arxiv.org/api/query"
-    max_results: 10
-    rate_limit: 3  # seconds between requests
+    max_results: 15  # More results per strategy
+    rate_limit: 0.5  # Faster for testing
+    foundational_focus: true  # Prioritize foundational papers
   
   semantic_scholar:
     base_url: "https://api.semanticscholar.org/graph/v1/paper"
-    api_key: null  # Optional API key for higher limits
-  
-  pubmed:
-    base_url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-    email: null  # Required for NCBI API
+    api_key: null
 
-# Vector Database
+# Vector Database - Enhanced for research papers
 vector_db:
-  provider: "chromadb"  # or "pinecone", "weaviate"
+  provider: "chromadb"
   settings:
     persist_directory: "./data/vectors"
     collection_name: "research_papers"
-    embedding_model: "all-MiniLM-L6-v2"
-    chunk_size: 512
-    chunk_overlap: 50
+    embedding_model: "all-MiniLM-L6-v2"  # Keep existing model for compatibility
+    chunk_size: 1000  # Larger chunks for more context
+    chunk_overlap: 150  # More overlap for continuity
 
 # Storage
 storage:
   papers_directory: "./data/papers"
   supported_formats: ["pdf", "txt", "json"]
-  max_file_size: "50MB"
+  max_file_size: "100MB"  # Allow larger papers
 
-# RAG Configuration
+# RAG Configuration - Much more lenient for better results
 rag:
-  max_context_length: 4000
-  similarity_threshold: 0.7
-  max_retrieved_chunks: 5
+  max_context_length: 8000  # Much larger context
+  similarity_threshold: 0.05  # Very low threshold for more results
+  max_retrieved_chunks: 12   # More chunks for comprehensive answers
+  query_enhancement: true    # Use multiple query variations
   rerank: true
