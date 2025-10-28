@@ -266,9 +266,10 @@ class SemanticScholarRetriever:
 class PaperRetrieverManager:
     """Manager for multiple paper retrieval sources"""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, folder_manager=None):
         self.config = config
         self.retrievers = {}
+        self.folder_manager = folder_manager
         
         if 'arxiv' in config:
             self.retrievers['arxiv'] = ArxivRetriever(config['arxiv'])

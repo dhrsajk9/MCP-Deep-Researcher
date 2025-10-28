@@ -1,4 +1,4 @@
-# Enhanced configuration for foundational papers and better RAG
+# Enhanced configuration with Shodhganga support
 
 # MCP Server Configuration
 server:
@@ -7,17 +7,31 @@ server:
   name: "research-paper-server"
   version: "1.0.0"
 
-# Research APIs - Enhanced for foundational papers
+# Research APIs - Enhanced for foundational papers and Indian theses
 apis:
   arxiv:
     base_url: "http://export.arxiv.org/api/query"
-    max_results: 15  # More results per strategy
-    rate_limit: 0.5  # Faster for testing
-    foundational_focus: true  # Prioritize foundational papers
+    max_results: 15
+    rate_limit: 0.5
+    foundational_focus: true
   
   semantic_scholar:
     base_url: "https://api.semanticscholar.org/graph/v1/paper"
     api_key: null
+  
+  # Shodhganga configuration for Indian university theses
+  shodhganga:
+    base_url: "https://shodhganga.inflibnet.ac.in"
+    rate_limit: 2  # Slower rate for respect
+    max_chapters: 20  # Maximum chapters to download per thesis
+    download_directory: "./data/papers/shodhganga"
+    enabled: true
+    # Optional: Filter by specific universities
+    preferred_universities:
+      - "Indian Institute of Technology"
+      - "Indian Institute of Science"
+      - "Jawaharlal Nehru University"
+      - "University of Delhi"
 
 # Vector Database - Enhanced for research papers
 vector_db:
@@ -25,20 +39,20 @@ vector_db:
   settings:
     persist_directory: "./data/vectors"
     collection_name: "research_papers"
-    embedding_model: "all-MiniLM-L6-v2"  # Keep existing model for compatibility
-    chunk_size: 1000  # Larger chunks for more context
-    chunk_overlap: 150  # More overlap for continuity
+    embedding_model: "all-MiniLM-L6-v2"
+    chunk_size: 1000  # Larger chunks for thesis content
+    chunk_overlap: 150
 
 # Storage
 storage:
   papers_directory: "./data/papers"
   supported_formats: ["pdf", "txt", "json"]
-  max_file_size: "100MB"  # Allow larger papers
+  max_file_size: "200MB"  # Larger for full theses
 
-# RAG Configuration - Much more lenient for better results
+# RAG Configuration
 rag:
-  max_context_length: 8000  # Much larger context
-  similarity_threshold: 0.05  # Very low threshold for more results
-  max_retrieved_chunks: 12   # More chunks for comprehensive answers
-  query_enhancement: true    # Use multiple query variations
+  max_context_length: 8000
+  similarity_threshold: 0.05
+  max_retrieved_chunks: 12
+  query_enhancement: true
   rerank: true
