@@ -212,12 +212,55 @@ class VectorStore:
         }
     
     async def delete_paper(self, paper_id: str):
-        """Delete all chunks of a paper from the vector store"""
-        # Find all chunks for this paper
-        results = self.collection.get(
-            where={"paper_id": paper_id}
-        )
-        
-        if results['ids']:
-            self.collection.delete(ids=results['ids'])
-            logging.info(f"Deleted paper {paper_id} from vector store")
+        """Delete all vectors for a specific paper ID"""
+        try:
+            self.collection.delete(where={"paper_id": paper_id})
+            logging.info(f"Deleted vectors for paper {paper_id}")
+            return True
+        except Exception as e:
+            logging.error(f"Error deleting vectors: {e}")
+            return False
+
+    def get_collection_stats(self) -> Dict:
+        return {
+            'total_documents': self.collection.count(),
+            'collection_name': self.settings['collection_name'],
+            'embedding_model': self.settings['embedding_model']
+        }
+    
+    def get_all_papers_metadata(self) -> List[Dict]:
+        """Get comprehensive metadata for all unique papers in DB"""
+        try:
+            # Fetch all metadata
+            data = self.collection.get(include=["metadatas"])
+            seen = set()
+            papers = []
+            
+            for m in data['metadatas']:
+                pid = m.get('paper_id')
+                # Only process if we haven't seen this paper ID yet
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    
+                    # Parse Authors (stored as JSON string)
+                    try:
+                        authors = json.loads(m.get('authors', '[]'))
+                        if isinstance(authors, list):
+                            authors = ", ".join(authors)
+                    except:
+                        authors = m.get('authors', 'Unknown')
+
+                    # Build detailed object
+                    papers.append({
+                        'id': pid,
+                        'title': m.get('title', 'Unknown'),
+                        'authors': authors,
+                        'source': m.get('source', 'Unknown').capitalize(),
+                        'date': m.get('published_date', 'Unknown'),
+                        'url': m.get('url', '#'),
+                        'chunk_count': 1 # We could count chunks if needed, but simple is fast
+                    })
+            return papers
+        except Exception as e:
+            logging.error(f"Error fetching metadata: {e}")
+            return []

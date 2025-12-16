@@ -33,6 +33,7 @@ from pathlib import Path
 from datetime import datetime
 import re
 from typing import Optional
+import os
 
 class FolderManager:
     """Manages organized folder structure for papers"""
@@ -137,3 +138,28 @@ class FolderManager:
             for source_dir in [self.arxiv_dir, self.shodhganga_dir, self.semantic_scholar_dir]:
                 all_folders.extend([d for d in source_dir.iterdir() if d.is_dir() and d.name.startswith('search_')])
             return all_folders
+    def delete_paper_files(self, paper_id: str):
+        """Find and delete physical files associated with a paper ID"""
+        deleted = False
+        # 1. Search for simple paper files (JSON/PDF)
+        for path in self.base_dir.rglob(f"{paper_id}.*"):
+            try:
+                os.remove(path)
+                deleted = True
+                print(f"Deleted file: {path}")
+            except Exception as e:
+                print(f"Error deleting {path}: {e}")
+        
+        # 2. Search for thesis folders (Shodhganga)
+        # These are directories named thesis_{paper_id}_...
+        for path in self.base_dir.rglob(f"thesis_{paper_id}_*"):
+            if path.is_dir():
+                try:
+                    import shutil
+                    shutil.rmtree(path)
+                    deleted = True
+                    print(f"Deleted folder: {path}")
+                except Exception as e:
+                    print(f"Error deleting folder {path}: {e}")
+                    
+        return deleted

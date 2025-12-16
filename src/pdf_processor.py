@@ -1,5 +1,4 @@
 import PyPDF2
-import requests
 import aiohttp
 import asyncio
 from pathlib import Path
@@ -26,74 +25,61 @@ class PDFProcessor:
         else:
             return int(size_str)
     
-    async def download_and_extract_pdf(self, paper: 'ResearchPaper') -> Optional[str]:
+    # UPDATED: Added save_dir parameter
+    async def download_and_extract_pdf(self, paper: 'ResearchPaper', save_dir: Path = None) -> Optional[str]:
         """Download PDF and extract text content"""
         
         if not paper.pdf_url:
             return None
         
         try:
-            # Download PDF
-            pdf_path = await self._download_pdf(paper)
-            if not pdf_path:
-                return None
+            # Use the provided save_dir, otherwise default to base papers_dir
+            target_dir = save_dir if save_dir else self.papers_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
             
-            # Extract text
-            text_content = self._extract_text_from_pdf(pdf_path)
+            pdf_path = target_dir / f"{paper.id}.pdf"
             
-            # Update paper metadata
-            paper.local_path = str(pdf_path)
+            # Check if already exists
+            if pdf_path.exists():
+                return self._extract_text_from_pdf(pdf_path)
             
-            return text_content
-            
-        except Exception as e:
-            logging.error(f"Error processing PDF for paper {paper.id}: {e}")
-            return None
-    
-    async def _download_pdf(self, paper: 'ResearchPaper') -> Optional[Path]:
-        """Download PDF file"""
-        
-        pdf_filename = f"{paper.id}.pdf"
-        pdf_path = self.papers_dir / pdf_filename
-        
-        try:
+            # Download
             async with aiohttp.ClientSession() as session:
-                async with session.get(paper.pdf_url) as response:
+                async with session.get(paper.pdf_url, ssl=False, timeout=60) as response:
                     if response.status == 200:
                         content_length = response.headers.get('Content-Length')
-                        
                         if content_length and int(content_length) > self.max_file_size:
-                            logging.warning(f"PDF too large for paper {paper.id}")
+                            logging.warning(f"PDF too large: {paper.id}")
                             return None
                         
                         content = await response.read()
                         
-                        if len(content) > self.max_file_size:
-                            logging.warning(f"PDF too large for paper {paper.id}")
-                            return None
-                        
                         with open(pdf_path, 'wb') as f:
                             f.write(content)
                         
-                        return pdf_path
+                        # Return the path so we know where it is
+                        return str(pdf_path)
                     
         except Exception as e:
-            logging.error(f"Error downloading PDF for paper {paper.id}: {e}")
+            logging.error(f"Error downloading PDF {paper.id}: {e}")
             return None
+            
+        return None
     
     def _extract_text_from_pdf(self, pdf_path: Path) -> str:
         """Extract text content from PDF"""
-        
         try:
+            # Ensure path is a Path object
+            pdf_path = Path(pdf_path)
+            
             with open(pdf_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
                 text_content = []
-                
-                for page in pdf_reader.pages:
-                    text_content.append(page.extract_text())
-                
+                # Limit pages to prevent freezing on massive files
+                max_pages = min(len(pdf_reader.pages), 20)
+                for i in range(max_pages):
+                    text_content.append(pdf_reader.pages[i].extract_text())
                 return "\n".join(text_content)
-                
         except Exception as e:
-            logging.error(f"Error extracting text from {pdf_path}: {e}")
+            logging.error(f"Extraction error {pdf_path}: {e}")
             return ""

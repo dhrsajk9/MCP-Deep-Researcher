@@ -1,0 +1,30 @@
+step 1:- Create/activate a virtual environment
+
+py -m venv .venv
+.\.venv\Scripts\activate
+
+step 2:- Install dependencies
+
+pip install -e .
+pip install -r requirements.txt
+
+Step3:-  Create the data folders
+
+mkdir .\data\papers -Force
+mkdir .\data\vectors -Force
+
+Step4:- Search and store papers locally
+
+py .\src\cli.py search -q "transformers attention" -s arxiv -n 5
+
+Ask a question over stored papers:- 
+
+py .\src\cli.py ask -q "What is self-attention and why is it useful?"
+
+py .\src\cli.py search_shodhganga -q "computer vision" -u "Indian Institute of Technology" -n 3
+
+
+Step5:- for Frontend command is 
+
+ streamlit run .\src\app.py
+

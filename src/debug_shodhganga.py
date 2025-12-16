@@ -1,358 +1,315 @@
-"""
-Alternative Shodhganga scraper using browse/discover endpoints
-"""
-
+import streamlit as st
 import asyncio
-import aiohttp
-from bs4 import BeautifulSoup
-import re
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-import logging
-from pathlib import Path
+import yaml
 import json
-from urllib.parse import urljoin, quote
+import pandas as pd
+import time
+import os
+import aiohttp
+import PyPDF2
+from io import BytesIO
+from pathlib import Path
 from datetime import datetime
+import google.generativeai as genai
+from dotenv import load_dotenv 
 
-@dataclass
-class Thesis:
-    """Data structure for Shodhganga theses"""
-    id: str
-    title: str
-    authors: List[str]
-    abstract: str
-    published_date: str
-    url: str
-    chapter_links: List[Dict] = None
-    source: str = "shodhganga"
-    local_path: Optional[str] = None
-    metadata: Dict = None
+# --- Load Environment Variables ---
+load_dotenv()
 
-class ShodhgangaRetrieverV2:
-    """Alternative Shodhganga scraper with multiple strategies"""
-    
-    def __init__(self, config: Dict):
-        self.config = config
-        self.base_url = config.get('base_url', 'https://shodhganga.inflibnet.ac.in')
-        self.rate_limit = config.get('rate_limit', 3)
-        self.timeout = config.get('timeout', 30)
-        
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-        }
-        
-        self.logger = logging.getLogger(__name__)
-    
-    async def search_theses(
-        self,
-        query: str,
-        university: Optional[str] = None,
-        max_results: int = 5
-    ) -> List[Thesis]:
-        """Search with multiple fallback strategies"""
-        
-        self.logger.info(f"Searching Shodhganga for: {query}")
-        
-        # Try multiple search strategies
-        strategies = [
-            self._search_simple_search,
-            self._search_discover,
-            self._browse_by_subject,
-        ]
-        
-        for i, strategy in enumerate(strategies, 1):
-            try:
-                self.logger.info(f"Trying strategy {i}/{len(strategies)}: {strategy.__name__}")
-                theses = await strategy(query, university, max_results)
-                
-                if theses:
-                    self.logger.info(f"Success with strategy {i}: found {len(theses)} theses")
-                    return theses
-                    
-            except Exception as e:
-                self.logger.error(f"Strategy {i} failed: {e}")
-                continue
-        
-        self.logger.warning("All search strategies failed")
-        return []
-    
-    async def _search_simple_search(self, query: str, university: Optional[str], max_results: int) -> List[Thesis]:
-        """Strategy 1: Use simple-search endpoint"""
-        
-        search_url = f"{self.base_url}/simple-search"
-        params = {
-            'query': query,
-            'start': 0,
-            'rpp': min(max_results * 2, 20)
-        }
-        
-        async with aiohttp.ClientSession(headers=self.headers) as session:
-            html = await self._fetch_page(session, search_url, params)
-            if not html:
-                return []
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            return await self._parse_search_results(soup, session, university, max_results)
-    
-    async def _search_discover(self, query: str, university: Optional[str], max_results: int) -> List[Thesis]:
-        """Strategy 2: Use discover endpoint"""
-        
-        search_url = f"{self.base_url}/discover"
-        params = {
-            'query': query,
-            'scope': '/',
-            'rpp': min(max_results * 2, 20)
-        }
-        
-        async with aiohttp.ClientSession(headers=self.headers) as session:
-            html = await self._fetch_page(session, search_url, params)
-            if not html:
-                return []
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            return await self._parse_search_results(soup, session, university, max_results)
-    
-    async def _browse_by_subject(self, query: str, university: Optional[str], max_results: int) -> List[Thesis]:
-        """Strategy 3: Browse by subject (fallback)"""
-        
-        # This would browse categories related to the query
-        # For now, return empty - can be implemented if search fails
-        return []
-    
-    async def _fetch_page(self, session: aiohttp.ClientSession, url: str, params: Dict = None) -> Optional[str]:
-        """Fetch a page with error handling"""
-        
+# Import your existing modules
+from paper_retriever import PaperRetrieverManager
+from vector_store import VectorStore
+from rag_engine import RAGEngine
+from pdf_processor import PDFProcessor
+from shodhganga_retriever import ShodhgangaRetriever
+from folder_manager import FolderManager
+
+# --- Page Config ---
+st.set_page_config(
+    page_title="Deep Researcher",
+    page_icon="🧬",
+    layout="wide"
+)
+
+# --- Helper Functions ---
+
+def load_config(config_path='config/config.yaml'):
+    if not Path(config_path).exists():
+        st.error(f"Config file not found at {config_path}.")
+        st.stop()
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+def run_async(coroutine):
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coroutine)
+
+# --- Gemini Configuration ---
+def configure_gemini():
+    env_key = os.getenv("GEMINI_API_KEY")
+    if env_key:
         try:
-            async with session.get(url, params=params, timeout=self.timeout, ssl=False) as response:
+            genai.configure(api_key=env_key)
+            return True
+        except: pass
+
+    st.sidebar.markdown("---")
+    api_key = st.sidebar.text_input("Gemini API Key", type="password")
+    if api_key:
+        try:
+            genai.configure(api_key=api_key)
+            return True
+        except: return False
+    return False
+
+# --- NEW: Function to Fetch URL Content & Summarize ---
+async def fetch_and_analyze_link(url, title, context="Thesis Chapter"):
+    """
+    Simulates Gemini 'visiting' a link by downloading the PDF/Page 
+    in Python and sending the text to the API.
+    """
+    text_content = ""
+    
+    # 1. Download Content
+    try:
+        # Handle Shodhganga specific port issues
+        clean_url = url.replace(":8443", "") if ":8443" in url else url
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(clean_url, ssl=False, timeout=60) as response:
                 if response.status == 200:
-                    return await response.text()
+                    content_type = response.headers.get('Content-Type', '')
+                    data = await response.read()
+                    
+                    # If PDF
+                    if 'pdf' in content_type or url.endswith('.pdf') or 'bitstream' in url:
+                        try:
+                            reader = PyPDF2.PdfReader(BytesIO(data))
+                            # Extract text from first 10 pages (to keep it fast and within token limits)
+                            limit_pages = min(len(reader.pages), 10)
+                            text_content = "\n".join([reader.pages[i].extract_text() for i in range(limit_pages)])
+                        except Exception as e:
+                            return f"Error reading PDF format: {e}"
+                    else:
+                        # Assume HTML/Text
+                        text_content = data.decode('utf-8', errors='ignore')[:10000]
                 else:
-                    self.logger.warning(f"HTTP {response.status} for {url}")
-                    
-        except Exception as e:
-            self.logger.error(f"Error fetching {url}: {e}")
+                    return f"Failed to reach link (HTTP {response.status})"
+    except Exception as e:
+        return f"Connection error: {str(e)}"
+
+    if not text_content:
+        return "Empty content found at link."
+
+    # 2. Send to Gemini
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        You are analyzing a research document from the following source: "{title}".
         
-        return None
+        I have downloaded the content from the link. Please analyze this text:
+        
+        TEXT CONTENT (Excerpt):
+        {text_content[:15000]}
+        
+        Please provide:
+        1. **Core Subject**: What is this specific document/chapter about?
+        2. **Key Arguments/Data**: What are the main points?
+        3. **Relevance**: How does this relate to the thesis title?
+        """
+        
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Gemini API Error: {str(e)}"
+
+# --- Session State ---
+if 'components_loaded' not in st.session_state:
+    with st.spinner("Initializing components..."):
+        config = load_config()
+        st.session_state.folder_mgr = FolderManager(config['storage']['papers_directory'])
+        st.session_state.paper_manager = PaperRetrieverManager(config['apis'], st.session_state.folder_mgr)
+        st.session_state.vector_store = VectorStore(config['vector_db'])
+        st.session_state.pdf_processor = PDFProcessor(config)
+        st.session_state.rag_engine = RAGEngine(st.session_state.vector_store, config['rag'])
+        if 'shodhganga' in config['apis']:
+            st.session_state.shodhganga = ShodhgangaRetriever(config['apis']['shodhganga'])
+        else:
+            st.session_state.shodhganga = None
+        st.session_state.config = config
+        st.session_state.components_loaded = True
+
+# --- UI ---
+st.sidebar.title("🧬 Deep Researcher")
+page = st.sidebar.radio("Navigate", ["Search & Download", "Shodhganga Thesis", "Chat with Papers", "Library & Manage"])
+gemini_enabled = configure_gemini()
+if gemini_enabled:
+    st.sidebar.success("AI Active")
+
+# --- PAGE: Search & Download ---
+if page == "Search & Download":
+    st.header("🌐 Search Global Papers")
+    col1, col2 = st.columns([3, 1])
+    with col1: query = st.text_input("Query")
+    with col2: num = st.number_input("Max", 1, 20, 3)
+    sources = st.multiselect("Sources", ["arxiv", "semantic_scholar"], default=["arxiv"])
     
-    async def _parse_search_results(self, soup: BeautifulSoup, session: aiohttp.ClientSession, university_filter: Optional[str], max_results: int) -> List[Thesis]:
-        """Parse search results with flexible selectors"""
-        
-        theses = []
-        
-        # Try multiple selectors for result items
-        result_containers = (
-            soup.find_all('div', class_='artifact-description') or
-            soup.find_all('tr', class_='ds-table-row') or
-            soup.find_all('div', class_=re.compile(r'result|item', re.I)) or
-            soup.find_all('article')
-        )
-        
-        if not result_containers:
-            # Try finding any links with /handle/ in them
-            handle_links = soup.find_all('a', href=re.compile(r'/handle/\d+/\d+'))
-            if handle_links:
-                self.logger.info(f"Found {len(handle_links)} handle links")
-                # Create pseudo-containers from links
-                result_containers = [link.parent for link in handle_links if link.parent]
-        
-        self.logger.info(f"Found {len(result_containers)} potential result containers")
-        
-        for container in result_containers[:max_results * 2]:
-            try:
-                thesis = await self._parse_single_result(container, session, university_filter)
-                if thesis:
-                    theses.append(thesis)
+    if st.button("Fetch"):
+        status = st.status("Processing...", expanded=True)
+        async def run_search():
+            res = []
+            for src in sources:
+                fldr = st.session_state.folder_mgr.create_search_folder(src, query)
+                papers = await st.session_state.paper_manager.search_papers(query, [src], num)
+                for p in papers:
+                    with open(fldr/f"{p.id}.json", 'w') as f:
+                        from dataclasses import asdict
+                        json.dump(asdict(p), f, indent=2, default=str)
                     
-                    if len(theses) >= max_results:
-                        break
-                    
-                    await asyncio.sleep(self.rate_limit)
-                    
-            except Exception as e:
-                self.logger.error(f"Error parsing result: {e}")
-                continue
+                    txt = await st.session_state.pdf_processor.download_and_extract_pdf(p) if p.pdf_url else None
+                    await st.session_state.vector_store.add_paper(p, txt)
+                    res.append(p)
+            return res
         
-        return theses
+        results = run_async(run_search())
+        status.update(label="Done", state="complete")
+        if results:
+            st.dataframe(pd.DataFrame([{"Title": p.title, "Source": p.source} for p in results]), width=2000)
+
+# --- PAGE: Shodhganga Thesis (UPDATED) ---
+elif page == "Shodhganga Thesis":
+    st.header("🇮🇳 Shodhganga Thesis Search")
     
-    async def _parse_single_result(self, container, session: aiohttp.ClientSession, university_filter: Optional[str]) -> Optional[Thesis]:
-        """Parse a single search result"""
-        
-        # Find title and URL
-        title_link = (
-            container.find('a', class_='artifact-title') or
-            container.find('a', href=re.compile(r'/handle/')) or
-            container.find('a')
-        )
-        
-        if not title_link:
-            return None
-        
-        title = title_link.get_text(strip=True)
-        thesis_url = title_link.get('href', '')
-        
-        if not thesis_url.startswith('http'):
-            thesis_url = urljoin(self.base_url, thesis_url)
-        
-        # Extract ID
-        thesis_id_match = re.search(r'/handle/(\d+/\d+)', thesis_url)
-        thesis_id = thesis_id_match.group(1).replace('/', '_') if thesis_id_match else 'unknown'
-        
-        self.logger.info(f"Parsing: {title[:50]}...")
-        
-        # Fetch detailed page
-        detail_html = await self._fetch_page(session, thesis_url)
-        if not detail_html:
-            return None
-        
-        detail_soup = BeautifulSoup(detail_html, 'html.parser')
-        
-        # Extract metadata
-        metadata = self._extract_metadata_flexible(detail_soup)
-        
-        # Apply university filter
-        if university_filter:
-            thesis_university = metadata.get('university', '').lower()
-            if university_filter.lower() not in thesis_university:
-                return None
-        
-        # Extract chapter links
-        chapter_links = self._extract_chapter_links_flexible(detail_soup, thesis_url)
-        
-        thesis = Thesis(
-            id=thesis_id,
-            title=title,
-            authors=metadata.get('authors', ['Unknown']),
-            abstract=metadata.get('abstract', 'No abstract available'),
-            published_date=metadata.get('year', 'Unknown'),
-            url=thesis_url,
-            chapter_links=chapter_links,
-            source="shodhganga",
-            metadata={
-                'university': metadata.get('university', 'Unknown'),
-                'department': metadata.get('department', 'Unknown'),
-                'guide': metadata.get('guide', 'Unknown'),
-                'degree': metadata.get('degree', 'Unknown'),
-                'year': metadata.get('year', 'Unknown'),
-                'subject': metadata.get('subject', []),
-                'chapters_count': len(chapter_links) if chapter_links else 0,
-            }
-        )
-        
-        return thesis
+    col1, col2 = st.columns([3, 1])
+    with col1: s_query = st.text_input("Topic")
+    with col2: s_uni = st.text_input("University")
+    s_max = st.number_input("Max Results", 1, 10, 3)
     
-    def _extract_metadata_flexible(self, soup: BeautifulSoup) -> Dict:
-        """Extract metadata with flexible selectors"""
+    if st.button("Search Theses", type="primary"):
+        status = st.status("Searching Shodhganga...", expanded=True)
         
-        metadata = {}
-        
-        # Try multiple methods to extract metadata
-        
-        # Method 1: Look for metadata tables
-        for table in soup.find_all('table'):
-            rows = table.find_all('tr')
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) >= 2:
-                    label = cells[0].get_text(strip=True).lower()
-                    value = cells[1].get_text(strip=True)
-                    
-                    self._parse_metadata_field(label, value, metadata)
-        
-        # Method 2: Look for definition lists
-        for dl in soup.find_all('dl'):
-            dts = dl.find_all('dt')
-            dds = dl.find_all('dd')
-            for dt, dd in zip(dts, dds):
-                label = dt.get_text(strip=True).lower()
-                value = dd.get_text(strip=True)
-                self._parse_metadata_field(label, value, metadata)
-        
-        # Method 3: Look for meta tags
-        for meta in soup.find_all('meta'):
-            name = meta.get('name', '').lower()
-            content = meta.get('content', '')
+        async def run_shodh():
+            fldr = st.session_state.folder_mgr.create_search_folder('shodhganga', s_query)
+            theses = await st.session_state.shodhganga.search_theses(s_query, s_uni, s_max)
+            processed = []
             
-            if 'author' in name:
-                if 'authors' not in metadata:
-                    metadata['authors'] = []
-                metadata['authors'].append(content)
-            elif 'date' in name:
-                year_match = re.search(r'\b(19|20)\d{2}\b', content)
-                if year_match:
-                    metadata['year'] = year_match.group()
-        
-        # Method 4: Look for abstract
-        if 'abstract' not in metadata:
-            abstract_div = soup.find(['div', 'section'], class_=re.compile(r'abstract', re.I))
-            if abstract_div:
-                metadata['abstract'] = abstract_div.get_text(strip=True)
-        
-        return metadata
-    
-    def _parse_metadata_field(self, label: str, value: str, metadata: Dict):
-        """Parse a single metadata field"""
-        
-        if any(word in label for word in ['author', 'researcher', 'scholar']):
-            metadata['authors'] = [value]
-        elif any(word in label for word in ['guide', 'supervisor']):
-            metadata['guide'] = value
-        elif 'university' in label or 'institution' in label:
-            metadata['university'] = value
-        elif 'department' in label or 'faculty' in label:
-            metadata['department'] = value
-        elif 'year' in label or 'date' in label:
-            year_match = re.search(r'\b(19|20)\d{2}\b', value)
-            if year_match:
-                metadata['year'] = year_match.group()
-        elif 'degree' in label:
-            metadata['degree'] = value
-        elif 'subject' in label or 'keyword' in label:
-            metadata['subject'] = [s.strip() for s in value.split(',')]
-        elif 'abstract' in label:
-            metadata['abstract'] = value
-    
-    def _extract_chapter_links_flexible(self, soup: BeautifulSoup, base_url: str) -> List[Dict]:
-        """Extract chapter links with flexible selectors"""
-        
-        chapter_links = []
-        
-        # Look for PDF links
-        pdf_links = soup.find_all('a', href=re.compile(r'\.pdf$|bitstream|download', re.I))
-        
-        for link in pdf_links:
-            href = link.get('href', '')
-            name = link.get_text(strip=True) or link.get('title', '') or f"Document {len(chapter_links) + 1}"
+            if not theses: return []
             
-            if href:
-                if not href.startswith('http'):
-                    href = urljoin(base_url, href)
+            for t in theses:
+                status.write(f"Processing: {t.title[:50]}...")
+                tf = st.session_state.folder_mgr.create_thesis_folder(fldr, t.id, t.title)
+                await st.session_state.shodhganga.save_thesis_info(t, tf)
                 
-                chapter_info = {
-                    'name': name,
-                    'url': href,
-                    'type': 'pdf'
-                }
+                # Basic Indexing
+                await st.session_state.vector_store.add_paper(t, f"Title: {t.title}\nAbstract: {t.abstract}")
                 
-                # Try to extract chapter number
-                chapter_match = re.search(r'chapter[_\s-]*(\d+)|ch[_\s-]*(\d+)|(\d+)[_\s-]*chapter', name, re.I)
-                if chapter_match:
-                    chapter_num = next(g for g in chapter_match.groups() if g)
-                    chapter_info['chapter_number'] = int(chapter_num)
-                
-                if href not in [c['url'] for c in chapter_links]:
-                    chapter_links.append(chapter_info)
+                processed.append({
+                    "Title": t.title, 
+                    "Researcher": ", ".join(t.authors),
+                    "University": t.metadata.get('university', 'Unknown'),
+                    "Chapters": len(t.chapter_links) if t.chapter_links else 0,
+                    "Abstract": t.abstract,
+                    "ChapterLinks": t.chapter_links, # Save links for Gemini
+                    "ID": t.id
+                })
+            return processed
+
+        results = run_async(run_shodh())
+        status.update(label="Done", state="complete")
         
-        # Sort by chapter number
-        chapter_links.sort(key=lambda x: x.get('chapter_number', 999))
+        if results:
+            st.session_state.shodh_results = results
+
+    if hasattr(st.session_state, 'shodh_results') and st.session_state.shodh_results:
+        st.subheader("📚 Results")
+        df = pd.DataFrame(st.session_state.shodh_results)
+        st.dataframe(df[["Title", "Researcher", "University", "Chapters"]], width=2000)
         
-        return chapter_links
+        st.markdown("### 📝 AI Deep Analysis")
+        for item in st.session_state.shodh_results:
+            with st.expander(f"📄 {item['Title']}"):
+                st.info(f"**Abstract:** {item['Abstract']}")
+                
+                if gemini_enabled:
+                    st.markdown("#### 🤖 Analyze Specific Content")
+                    
+                    # Option 1: Summarize Abstract
+                    if st.button("✨ Summarize Abstract", key=f"abs_{item['ID']}"):
+                         model = genai.GenerativeModel('gemini-1.5-flash')
+                         resp = model.generate_content(f"Summarize this thesis abstract: {item['Abstract']}")
+                         st.success(resp.text)
+
+                    # Option 2: Analyze specific Chapters (Gemini "goes to link")
+                    if item['ChapterLinks']:
+                        st.markdown("or select a chapter to analyze:")
+                        
+                        # Create a dropdown for chapters
+                        chapter_map = {f"{c['name']}": c['url'] for c in item['ChapterLinks']}
+                        selected_chap = st.selectbox("Select Chapter", list(chapter_map.keys()), key=f"sel_{item['ID']}")
+                        
+                        if st.button(f"🚀 Gemini: Go to Link & Analyze", key=f"link_{item['ID']}"):
+                            target_url = chapter_map[selected_chap]
+                            
+                            with st.status("🤖 Gemini Agent Working...", expanded=True) as agent_status:
+                                agent_status.write("1️⃣ Connecting to Shodhganga...")
+                                agent_status.write(f"🔗 Target: {target_url}")
+                                
+                                # Run the Fetch -> Extract -> Summarize pipeline
+                                summary = run_async(fetch_and_analyze_link(target_url, item['Title']))
+                                
+                                agent_status.write("2️⃣ Content Downloaded & Read")
+                                agent_status.write("3️⃣ Generating Insight...")
+                            
+                            st.markdown(f"#### 🧠 Analysis of: {selected_chap}")
+                            st.markdown(summary)
+                    else:
+                        st.caption("No direct chapter links found to analyze.")
+                else:
+                    st.warning("Enable Gemini to use AI features.")
+
+# --- PAGE: Chat ---
+elif page == "Chat with Papers":
+    st.header("💬 Chat")
+    try: papers = st.session_state.vector_store.get_all_papers_metadata()
+    except: papers = []
     
-    async def save_thesis_info(self, thesis: Thesis, thesis_folder: Path):
-        """Save thesis information"""
+    opts = ["All"] + [p['title'] for p in papers]
+    sel = st.selectbox("Context", opts)
+    
+    if "messages" not in st.session_state: st.session_state.messages = []
+    for m in st.session_state.messages: 
+        with st.chat_message(m["role"]): st.markdown(m["content"])
         
-        # (Same as before - keep the existing implementation)
-        pass
+    if p := st.chat_input("Ask..."):
+        st.session_state.messages.append({"role":"user", "content":p})
+        with st.chat_message("user"): st.markdown(p)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                filter = {"paper_id": next((x['id'] for x in papers if x['title'] == sel), None)} if sel != "All" else None
+                res = run_async(st.session_state.rag_engine.query(p, context_filter=filter))
+                st.markdown(res.answer)
+                st.session_state.messages.append({"role":"assistant", "content":res.answer})
+
+# --- PAGE: Library ---
+elif page == "Library & Manage":
+    st.header("📚 Library")
+    try: papers = st.session_state.vector_store.get_all_papers_metadata()
+    except: papers = []
+    
+    if not papers: st.info("Empty")
+    else:
+        for p in papers:
+            with st.expander(f"📄 {p['title']}"):
+                col1, col2 = st.columns([3,1])
+                with col1:
+                    st.write(f"**ID:** {p['id']}")
+                    st.write(f"**Source:** {p['source']}")
+                with col2:
+                    if st.button("Delete", key=f"del_{p['id']}"):
+                        run_async(st.session_state.vector_store.delete_paper(p['id']))
+                        st.session_state.folder_mgr.delete_paper_files(p['id'])
+                        st.rerun()
