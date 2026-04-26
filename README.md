@@ -34,7 +34,7 @@ This repo supports:
 
 ### 1. Clone
 ```bash
-git clone <your-repo-url>
+git clone <https://github.com/dhrsajk9/MCP-Deep-Researcher>
 cd MCP-Deep-Researcher
 ```
 
