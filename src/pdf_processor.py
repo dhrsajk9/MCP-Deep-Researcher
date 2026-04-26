@@ -41,7 +41,12 @@ class PDFProcessor:
             
             # Check if already exists
             if pdf_path.exists():
-                return self._extract_text_from_pdf(pdf_path)
+                full_text = self._extract_text_from_pdf(pdf_path)
+                full_text = self._normalize_extracted_text(full_text)
+                if not full_text:
+                    full_text = self._fallback_text_from_metadata(paper)
+                self._write_text_file(target_dir, paper.id, full_text)
+                return full_text
             
             # Download
             async with aiohttp.ClientSession() as session:
@@ -57,8 +62,12 @@ class PDFProcessor:
                         with open(pdf_path, 'wb') as f:
                             f.write(content)
                         
-                        # Return the path so we know where it is
-                        return str(pdf_path)
+                        full_text = self._extract_text_from_pdf(pdf_path)
+                        full_text = self._normalize_extracted_text(full_text)
+                        if not full_text:
+                            full_text = self._fallback_text_from_metadata(paper)
+                        self._write_text_file(target_dir, paper.id, full_text)
+                        return full_text
                     
         except Exception as e:
             logging.error(f"Error downloading PDF {paper.id}: {e}")
@@ -78,8 +87,35 @@ class PDFProcessor:
                 # Limit pages to prevent freezing on massive files
                 max_pages = min(len(pdf_reader.pages), 20)
                 for i in range(max_pages):
-                    text_content.append(pdf_reader.pages[i].extract_text())
+                    page_text = pdf_reader.pages[i].extract_text()
+                    text_content.append(page_text or "")
                 return "\n".join(text_content)
         except Exception as e:
             logging.error(f"Extraction error {pdf_path}: {e}")
             return ""
+
+    def _normalize_extracted_text(self, text: Optional[str]) -> str:
+        if not text:
+            return ""
+        normalized = text.replace("\x00", "").strip()
+        return normalized
+
+    def _fallback_text_from_metadata(self, paper: 'ResearchPaper') -> str:
+        title = getattr(paper, "title", "") or ""
+        abstract = getattr(paper, "abstract", "") or ""
+        authors = getattr(paper, "authors", []) or []
+        authors_text = ", ".join(authors)
+
+        fallback = (
+            f"Title: {title}\n"
+            f"Authors: {authors_text}\n"
+            f"Abstract: {abstract}\n\n"
+            "[Note] PDF text extraction returned empty content. "
+            "Stored metadata/abstract fallback."
+        )
+        return fallback.strip()
+
+    def _write_text_file(self, target_dir: Path, paper_id: str, text: str) -> None:
+        text_path = target_dir / f"{paper_id}.txt"
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(text or "")

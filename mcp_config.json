@@ -2,8 +2,8 @@
   "mcpServers": {
     "research-papers": {
       "command": "python",
-      "args": ["src/mcp_server.py"],
-      "cwd": "/path/to/research-mcp-server"
+      "args": ["src/server.py"],
+      "cwd": "D:/AI&DS/Sem VII/Project_I/MCP-Deep-Researcher"
     }
   }
 }

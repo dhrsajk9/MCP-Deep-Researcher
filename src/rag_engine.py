@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 import json
 
+logger = logging.getLogger(__name__)
+
 @dataclass
 class RAGResult:
     """Result from RAG query"""
@@ -33,8 +35,8 @@ class RAGEngine:
         
         max_results = max_results or self.max_retrieved_chunks
         
-        print(f"Enhanced RAG search for: {question}")
-        print(f"Using similarity threshold: {self.similarity_threshold}")
+        logger.info("Enhanced RAG search for: %s", question)
+        logger.info("Using similarity threshold: %s", self.similarity_threshold)
         
         # 1. Retrieve relevant chunks with multiple attempts
         search_results = await self.vector_store.search(
@@ -43,17 +45,17 @@ class RAGEngine:
             similarity_threshold=self.similarity_threshold
         )
         
-        print(f"Found {len(search_results)} relevant chunks")
+        logger.info("Found %s relevant chunks", len(search_results))
         
         # Try with even lower threshold if no results
         if not search_results:
-            print("Retrying with ultra-low threshold...")
+            logger.info("Retrying with ultra-low threshold...")
             search_results = await self.vector_store.search(
                 query=question,
                 max_results=max_results * 2,
                 similarity_threshold=0.01  # Ultra-low threshold
             )
-            print(f"Retry found {len(search_results)} chunks")
+            logger.info("Retry found %s chunks", len(search_results))
         
         if not search_results:
             return RAGResult(

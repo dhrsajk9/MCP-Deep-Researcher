@@ -10,8 +10,7 @@ from pathlib import Path
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    Resource, Tool, TextContent,
-    CallToolRequest, ListResourcesRequest, ListToolsRequest
+    Resource, Tool, TextContent
 )
 
 # Local imports
@@ -20,6 +19,7 @@ from vector_store import VectorStore
 from rag_engine import RAGEngine
 from pdf_processor import PDFProcessor
 from shodhganga_retriever import ShodhgangaRetriever
+from folder_manager import FolderManager
 
 # Configure logging
 logging.basicConfig(
@@ -32,22 +32,19 @@ class ResearchMCPServer:
     """MCP Server for research paper retrieval and RAG"""
     
     def __init__(self, config_path: str = "config/config.yaml"):
+        self.project_root = Path(__file__).resolve().parent.parent
         self.config = self._load_config(config_path)
         self.server = Server("research-paper-server")
-        
-        # Initialize components
-        logger.info("Initializing MCP server components...")
-        self.paper_manager = PaperRetrieverManager(self.config['apis'])
-        self.vector_store = VectorStore(self.config['vector_db'])
-        self.rag_engine = RAGEngine(self.vector_store, self.config['rag'])
-        self.pdf_processor = PDFProcessor(self.config)
-        
-        # Initialize Shodhganga retriever if configured
-        if 'shodhganga' in self.config['apis']:
-            self.shodhganga = ShodhgangaRetriever(self.config['apis']['shodhganga'])
-            logger.info("Shodhganga retriever initialized")
-        else:
-            self.shodhganga = None
+
+        # Lazy initialization of heavy components (vector store + embeddings).
+        # This prevents client handshake timeouts / disconnects on startup.
+        self.paper_manager = None
+        self.vector_store = None
+        self.rag_engine = None
+        self.pdf_processor = None
+        self.shodhganga = None
+        self.folder_manager = None
+        self._init_error = None
         
         # Storage
         self.papers_dir = Path(self.config['storage']['papers_directory'])
@@ -60,8 +57,78 @@ class ResearchMCPServer:
     
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file"""
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
+        path = Path(config_path)
+        if not path.is_absolute():
+            # Resolve relative config against the project root, not process cwd.
+            candidate = self.project_root / config_path
+            if candidate.exists():
+                path = candidate
+
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+
+        return self._normalize_config_paths(data)
+
+    def _resolve_project_path(self, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        p = Path(value)
+        if not p.is_absolute():
+            p = self.project_root / p
+        return str(p)
+
+    def _normalize_config_paths(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize path-like config fields to absolute project paths."""
+        storage = config.get('storage', {})
+        if 'papers_directory' in storage:
+            storage['papers_directory'] = self._resolve_project_path(storage.get('papers_directory'))
+
+        vector_settings = config.get('vector_db', {}).get('settings', {})
+        if 'persist_directory' in vector_settings:
+            vector_settings['persist_directory'] = self._resolve_project_path(
+                vector_settings.get('persist_directory')
+            )
+
+        shodhganga_cfg = config.get('apis', {}).get('shodhganga', {})
+        if 'download_directory' in shodhganga_cfg:
+            shodhganga_cfg['download_directory'] = self._resolve_project_path(
+                shodhganga_cfg.get('download_directory')
+            )
+
+        return config
+
+    def _initialize_components(self) -> Optional[str]:
+        """Initialize runtime components only when needed."""
+        if self.rag_engine is not None:
+            return None
+
+        if self._init_error is not None:
+            return self._init_error
+
+        try:
+            logger.info("Initializing MCP server components lazily...")
+            self.paper_manager = PaperRetrieverManager(self.config['apis'])
+            self.vector_store = VectorStore(self.config['vector_db'])
+            self.rag_engine = RAGEngine(self.vector_store, self.config['rag'])
+            self.pdf_processor = PDFProcessor(self.config)
+            self.folder_manager = FolderManager(self.config['storage']['papers_directory'])
+
+            if 'shodhganga' in self.config['apis']:
+                self.shodhganga = ShodhgangaRetriever(self.config['apis']['shodhganga'])
+                logger.info("Shodhganga retriever initialized")
+
+            logger.info("MCP components initialized")
+            return None
+        except Exception as e:
+            self._init_error = (
+                "Server connected, but backend initialization failed. "
+                f"Details: {e}"
+            )
+            logger.error(self._init_error, exc_info=True)
+            return self._init_error
     
     def _setup_handlers(self):
         """Setup MCP server handlers"""
@@ -71,17 +138,33 @@ class ResearchMCPServer:
             """List available resources (stored papers)"""
             resources = []
             
-            # Add vector store statistics as a resource
-            stats = self.vector_store.get_collection_stats()
-            resources.append(Resource(
-                uri="vector-store://stats",
-                name="Vector Store Statistics",
-                description=f"Statistics about the vector database ({stats['total_documents']} papers)",
-                mimeType="application/json"
-            ))
+            # Keep connect-time resource listing lightweight.
+            # Include backend status without forcing heavy initialization.
+            if self._init_error:
+                resources.append(Resource(
+                    uri="server://status",
+                    name="Server Status",
+                    description=self._init_error,
+                    mimeType="application/json"
+                ))
+            elif self.vector_store is not None:
+                stats = self.vector_store.get_collection_stats()
+                resources.append(Resource(
+                    uri="vector-store://stats",
+                    name="Vector Store Statistics",
+                    description=f"Statistics about the vector database ({stats['total_documents']} papers)",
+                    mimeType="application/json"
+                ))
+            else:
+                resources.append(Resource(
+                    uri="server://status",
+                    name="Server Status",
+                    description="Backend is lazy-initialized and will load on first tool call.",
+                    mimeType="application/json"
+                ))
             
-            # Add stored papers as resources
-            for paper_file in self.papers_dir.glob("*.json"):
+            # Add stored papers as resources (recursive to include search folders).
+            for paper_file in self.papers_dir.rglob("*.json"):
                 resources.append(Resource(
                     uri=f"paper://{paper_file.stem}",
                     name=f"Paper: {paper_file.stem}",
@@ -203,6 +286,10 @@ class ResearchMCPServer:
             """Handle tool calls"""
             
             logger.info(f"Tool called: {name} with arguments: {arguments}")
+
+            init_error = self._initialize_components()
+            if init_error:
+                return [TextContent(type="text", text=init_error)]
             
             try:
                 if name == "search_papers":
@@ -238,57 +325,86 @@ class ResearchMCPServer:
         store_locally = args.get("store_locally", True)
         
         try:
-            # Search for papers
-            papers = await self.paper_manager.search_papers(
-                query=query,
-                sources=sources,
-                max_results=max_results
-            )
-            
             results = []
             stored_count = 0
-            
-            for paper in papers:
-                # Store locally if requested
+            source_summary = {}
+            total_found = 0
+
+            # Preserve old behavior: process each source in its own search folder.
+            for source in sources:
+                papers = await self.paper_manager.search_papers(
+                    query=query,
+                    sources=[source],
+                    max_results=max_results
+                )
+                total_found += len(papers)
+
+                search_folder = None
                 if store_locally:
-                    try:
-                        # Save paper metadata
-                        paper_file = self.papers_dir / f"{paper.id}.json"
-                        with open(paper_file, 'w') as f:
-                            from dataclasses import asdict
-                            json.dump(asdict(paper), f, indent=2)
-                        
-                        # Download PDF and extract text if available
-                        full_text = None
-                        if paper.pdf_url:
-                            full_text = await self.pdf_processor.download_and_extract_pdf(paper)
-                        
-                        # Add to vector store
-                        await self.vector_store.add_paper(paper, full_text)
-                        stored_count += 1
-                        
-                    except Exception as e:
-                        logger.error(f"Failed to store paper {paper.id}: {e}")
-                
-                # Prepare result
-                paper_info = {
-                    "id": paper.id,
-                    "title": paper.title,
-                    "authors": paper.authors,
-                    "abstract": paper.abstract[:300] + "..." if len(paper.abstract) > 300 else paper.abstract,
-                    "published_date": paper.published_date,
-                    "source": paper.source,
-                    "url": paper.url,
-                    "categories": paper.categories,
-                    "relevance_score": paper.metadata.get('relevance_score', 0) if paper.metadata else 0
+                    search_folder = self.folder_manager.create_search_folder(source, query)
+
+                source_summary[source] = {
+                    "found": len(papers),
+                    "search_folder": str(search_folder) if search_folder else None
                 }
-                results.append(paper_info)
+
+                for paper in papers:
+                    # Store locally if requested
+                    if store_locally:
+                        try:
+                            from dataclasses import asdict
+
+                            # Save metadata inside the search folder.
+                            paper_file = search_folder / f"{paper.id}.json"
+                            with open(paper_file, 'w', encoding='utf-8') as f:
+                                json.dump(asdict(paper), f, indent=2, ensure_ascii=False)
+
+                            # Download PDF and extract text into the same folder.
+                            full_text = None
+                            if paper.pdf_url:
+                                full_text = await self.pdf_processor.download_and_extract_pdf(
+                                    paper, save_dir=search_folder
+                                )
+                            # Ensure a .txt artifact always exists, matching legacy behavior.
+                            text_for_file = full_text
+                            if not text_for_file:
+                                text_for_file = (
+                                    f"Title: {paper.title}\n"
+                                    f"Authors: {', '.join(paper.authors)}\n"
+                                    f"Abstract: {paper.abstract}\n\n"
+                                    "[Note] Full text unavailable; stored metadata/abstract fallback."
+                                )
+                            text_file = search_folder / f"{paper.id}.txt"
+                            with open(text_file, 'w', encoding='utf-8') as f:
+                                f.write(text_for_file)
+
+                            # Add to vector store
+                            await self.vector_store.add_paper(paper, full_text)
+                            stored_count += 1
+
+                        except Exception as e:
+                            logger.error(f"Failed to store paper {paper.id}: {e}")
+                    
+                    # Prepare result
+                    paper_info = {
+                        "id": paper.id,
+                        "title": paper.title,
+                        "authors": paper.authors,
+                        "abstract": paper.abstract[:300] + "..." if len(paper.abstract) > 300 else paper.abstract,
+                        "published_date": paper.published_date,
+                        "source": paper.source,
+                        "url": paper.url,
+                        "categories": paper.categories,
+                        "relevance_score": paper.metadata.get('relevance_score', 0) if paper.metadata else 0
+                    }
+                    results.append(paper_info)
             
             response = {
                 "query": query,
                 "sources_searched": sources,
-                "total_found": len(papers),
+                "total_found": total_found,
                 "stored_locally": stored_count if store_locally else 0,
+                "searches": source_summary,
                 "papers": results
             }
             
@@ -419,7 +535,7 @@ class ResearchMCPServer:
         paper_id = args["paper_id"]
         
         try:
-            summary = await self.rag_engine.get_paper_summary(paper_id)
+            summary = self.rag_engine.get_paper_summary(paper_id)
             
             if summary:
                 return [TextContent(
@@ -444,15 +560,16 @@ class ResearchMCPServer:
         try:
             # Get papers from local storage
             papers = []
-            for paper_file in self.papers_dir.glob("*.json"):
-                with open(paper_file, 'r') as f:
+            for paper_file in self.papers_dir.rglob("*.json"):
+                with open(paper_file, 'r', encoding='utf-8') as f:
                     paper_data = json.load(f)
                     papers.append({
                         "id": paper_data["id"],
                         "title": paper_data["title"],
                         "authors": paper_data["authors"][:3] if len(paper_data["authors"]) > 3 else paper_data["authors"],
                         "source": paper_data["source"],
-                        "published_date": paper_data.get("published_date", "Unknown")
+                        "published_date": paper_data.get("published_date", "Unknown"),
+                        "path": str(paper_file)
                     })
             
             # Get vector store stats

@@ -7,6 +7,8 @@ import json
 import logging
 from dataclasses import asdict
 
+logger = logging.getLogger(__name__)
+
 class VectorStore:
     """Vector store for research papers using ChromaDB"""
     
@@ -93,7 +95,7 @@ class VectorStore:
                 text_content.append(enhanced_chunk)
         
         # Generate embeddings
-        print(f"Generating embeddings for {len(text_content)} chunks...")
+        logger.info("Generating embeddings for %s chunks...", len(text_content))
         embeddings = self.embedding_model.encode(text_content).tolist()
         
         # Prepare metadata
@@ -137,7 +139,11 @@ class VectorStore:
         # Use much lower default threshold for more results
         similarity_threshold = similarity_threshold or 0.05  # Very low threshold
         
-        print(f"Enhanced vector search - Query: '{query}', Threshold: {similarity_threshold}")
+        logger.info(
+            "Enhanced vector search - Query: '%s', Threshold: %s",
+            query,
+            similarity_threshold,
+        )
         
         try:
             # Generate multiple query variations for better matching
@@ -191,16 +197,19 @@ class VectorStore:
             unique_results.sort(key=lambda x: x['similarity'], reverse=True)
             final_results = unique_results[:max_results]
             
-            print(f"Found {len(final_results)} unique results above threshold {similarity_threshold}")
+            logger.info(
+                "Found %s unique results above threshold %s",
+                len(final_results),
+                similarity_threshold,
+            )
             for i, result in enumerate(final_results):
                 title = result['metadata'].get('title', 'Unknown')[:40]
-                print(f"  {i+1}. Sim: {result['similarity']:.3f} - {title}...")
+                logger.info("  %s. Sim: %.3f - %s...", i + 1, result['similarity'], title)
             
             return final_results
             
         except Exception as e:
             logging.error(f"Error in enhanced vector search: {e}")
-            print(f"Vector search error: {e}")
             return []
     
     def get_collection_stats(self) -> Dict:

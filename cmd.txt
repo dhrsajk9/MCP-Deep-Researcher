@@ -15,7 +15,7 @@ mkdir .\data\vectors -Force
 
 Step4:- Search and store papers locally
 
-py .\src\cli.py search -q "transformers attention" -s arxiv -n 5
+python src/cli.py search -q "Neural Networks" -n 5
 
 Ask a question over stored papers:- 
 

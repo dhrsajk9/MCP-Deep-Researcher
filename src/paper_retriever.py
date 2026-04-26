@@ -9,6 +9,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 import logging
 
+logger = logging.getLogger(__name__)
+
 @dataclass
 class ResearchPaper:
     """Data structure for research papers"""
@@ -120,10 +122,10 @@ class ArxivRetriever:
         all_papers = []
         strategies = self._get_search_strategies(query)
         
-        print(f"Using {len(strategies)} search strategies for: {query}")
+        logger.info("Using %s search strategies for: %s", len(strategies), query)
         
         for i, strategy in enumerate(strategies, 1):
-            print(f"Strategy {i}: {strategy['description']}")
+            logger.info("Strategy %s: %s", i, strategy["description"])
             
             try:
                 search = arxiv.Search(
